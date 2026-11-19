@@ -1,0 +1,62 @@
+name: Build APK
+on:
+  push:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.7
+      - name: Download offline speech models (Vosk)
+        shell: bash
+        run: |
+          set -e
+          mkdir -p app/src/main/assets/models
+          cd app/src/main/assets/models
+          for pair in "vosk-model-small-en-in-0.4:en-in" "vosk-model-small-en-us-0.15:en-us" "vosk-model-spk-0.4:spk"; do
+            name="${pair%%:*}"
+            dir="${pair##*:}"
+            curl -L --fail --retry 3 -o "$name.zip" "https://alphacephei.com/vosk/models/$name.zip"
+            unzip -q "$name.zip"
+            mv "$name" "$dir"
+            rm "$name.zip"
+          done
+          ls
+          ls en-in
+      - name: Build (prints Kotlin errors at the top of the run page)
+        shell: bash
+        run: |
+          set +e
+          gradle assembleDebug --parallel --build-cache --no-daemon --console=plain --warning-mode=none 2>&1 | tee build.log
+          code=${PIPESTATUS[0]}
+          grep -E '^e: ' build.log | sed 's#file:///home/runner/work/[^/]*/[^/]*/##' | while read -r line; do echo "::error::$line"; done
+          if [ $code -ne 0 ]; then
+            # also surface Gradle's own explanation (dependency / SDK / resource errors)
+            grep -A8 -E 'What went wrong' build.log | head -20 | while read -r line; do echo "::error::$line"; done
+          fi
+          {
+            echo "### Build result: exit code $code"
+            echo '```'
+            grep -E '^e: |^w: .*error|What went wrong|Execution failed|Could not' build.log | sed 's#file:///home/runner/work/[^/]*/[^/]*/##' | head -40
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit $code
+      - name: Keep full build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Riya-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
